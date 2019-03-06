@@ -649,6 +649,114 @@ func runQuery(tx *badger.Txn, dataType interface{}, query *Query, retrievedKeys 
 	return nil
 }
 
+func runQueryPRS(tx *badger.Txn, dataType interface{}, query *Query, retrievedKeys keyList, skip int, kuncian string,
+	action func(r *record, kuncian string) error) error {
+	storer := newStorer(dataType)
+
+	tp := dataType
+
+	for reflect.TypeOf(tp).Kind() == reflect.Ptr {
+		tp = reflect.ValueOf(tp).Elem().Interface()
+	}
+
+	query.dataType = reflect.TypeOf(tp)
+
+	if len(query.sort) > 0 {
+		return runQuerySortPRS(tx, dataType, query, kuncian, action)
+	}
+
+	iter := newIterator(tx, kuncian+storer.Type(), query, query.bookmark)
+	if (query.writable || query.subquery) && query.bookmark == nil {
+		query.bookmark = iter.createBookmark()
+	}
+
+	defer func() {
+		iter.Close()
+		query.bookmark = nil
+	}()
+
+	if query.index != "" && query.badIndex {
+		return fmt.Errorf("The index %s does not exist", query.index)
+	}
+
+	newKeys := make(keyList, 0)
+
+	limit := query.limit - len(retrievedKeys)
+
+	for k, v := iter.Next(); k != nil; k, v = iter.Next() {
+		if len(retrievedKeys) != 0 {
+			// don't check this record if it's already been retrieved
+			if retrievedKeys.in(k) {
+				continue
+			}
+		}
+
+		val := reflect.New(reflect.TypeOf(tp))
+
+		err := decode(v, val.Interface())
+		if err != nil {
+			return err
+		}
+
+		query.tx = tx
+
+		ok, err := query.matchesAllFields(k, val, val.Interface())
+		if err != nil {
+			return err
+		}
+
+		if ok {
+			if skip > 0 {
+				skip--
+				continue
+			}
+
+			err = action(&record{
+				key:   k,
+				value: val,
+			}, kuncian)
+			if err != nil {
+				return err
+			}
+
+			// track that this key's entry has been added to the result list
+			newKeys.add(k)
+
+			if query.limit != 0 {
+				limit--
+				if limit == 0 {
+					break
+				}
+			}
+		}
+
+	}
+
+	if iter.Error() != nil {
+		return iter.Error()
+	}
+
+	if query.limit != 0 && limit == 0 {
+		return nil
+	}
+
+	if len(query.ors) > 0 {
+		iter.Close()
+		for i := range newKeys {
+			retrievedKeys.add(newKeys[i])
+		}
+
+		for i := range query.ors {
+			err := runQueryPRS(tx, tp, query.ors[i], retrievedKeys, skip, kuncian, action)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
 // runQuerySort runs the query without sort, skip, or limit, then applies them to the entire result set
 func runQuerySort(tx *badger.Txn, dataType interface{}, query *Query, action func(r *record) error) error {
 	// Validate sort fields
@@ -758,6 +866,115 @@ func runQuerySort(tx *badger.Txn, dataType interface{}, query *Query, action fun
 
 }
 
+// runQuerySortPRS runs the query without sort, skip, or limit, then applies them to the entire result set
+func runQuerySortPRS(tx *badger.Txn, dataType interface{}, query *Query, kuncian string, action func(r *record, kuncian string) error) error {
+	// Validate sort fields
+	for _, field := range query.sort {
+		fields := strings.Split(field, ".")
+
+		current := query.dataType
+		for i := range fields {
+			var structField reflect.StructField
+			found := false
+			if current.Kind() == reflect.Ptr {
+				structField, found = current.Elem().FieldByName(fields[i])
+			} else {
+				structField, found = current.FieldByName(fields[i])
+			}
+
+			if !found {
+				return fmt.Errorf("The field %s does not exist in the type %s", field, query.dataType)
+			}
+			current = structField.Type
+		}
+	}
+
+	// Run query without sort, skip or limit
+	// apply sort, skip and limit to entire dataset
+	qCopy := *query
+	qCopy.sort = nil
+	qCopy.limit = 0
+	qCopy.skip = 0
+
+	var records []*record
+	err := runQueryPRS(tx, dataType, &qCopy, nil, 0, kuncian,
+		func(r *record, kuncian string) error {
+			records = append(records, r)
+
+			return nil
+		})
+
+	if err != nil {
+		return err
+	}
+
+	sort.Slice(records, func(i, j int) bool {
+		for _, field := range query.sort {
+			val, err := fieldValue(records[i].value.Elem(), field)
+			if err != nil {
+				panic(err.Error()) // shouldn't happen due to field check above
+			}
+			value := val.Interface()
+
+			val, err = fieldValue(records[j].value.Elem(), field)
+			if err != nil {
+				panic(err.Error()) // shouldn't happen due to field check above
+			}
+
+			other := val.Interface()
+
+			if query.reverse {
+				value, other = other, value
+			}
+
+			cmp, cerr := compare(value, other)
+			if cerr != nil {
+				// if for some reason there is an error on compare, fallback to a lexicographic compare
+				valS := fmt.Sprintf("%s", value)
+				otherS := fmt.Sprintf("%s", other)
+				if valS < otherS {
+					return true
+				} else if valS == otherS {
+					continue
+				}
+				return false
+			}
+
+			if cmp == -1 {
+				return true
+			} else if cmp == 0 {
+				continue
+			}
+			return false
+		}
+		return false
+	})
+
+	// apply skip and limit
+	limit := query.limit
+	skip := query.skip
+
+	if skip > len(records) {
+		records = records[0:0]
+	} else {
+		records = records[skip:]
+	}
+
+	if limit > 0 && limit <= len(records) {
+		records = records[:limit]
+	}
+
+	for i := range records {
+		err = action(records[i], kuncian)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+
+}
+
 func findQuery(tx *badger.Txn, result interface{}, query *Query) error {
 	if query == nil {
 		query = &Query{}
@@ -806,6 +1023,73 @@ func findQuery(tx *badger.Txn, result interface{}, query *Query) error {
 
 			if keyType != nil {
 				err := decodeKey(r.key, rowValue.FieldByName(keyField).Addr().Interface(), tp.Name())
+				if err != nil {
+					return err
+				}
+			}
+
+			sliceVal = reflect.Append(sliceVal, rowValue)
+
+			return nil
+		})
+
+	if err != nil {
+		return err
+	}
+
+	resultVal.Elem().Set(sliceVal.Slice(0, sliceVal.Len()))
+
+	return nil
+}
+
+func findQueryPRS(tx *badger.Txn, result interface{}, query *Query, kuncian string) error {
+	if query == nil {
+		query = &Query{}
+	}
+
+	query.writable = false
+
+	resultVal := reflect.ValueOf(result)
+	if resultVal.Kind() != reflect.Ptr || resultVal.Elem().Kind() != reflect.Slice {
+		panic("result argument must be a slice address")
+	}
+
+	sliceVal := resultVal.Elem()
+
+	elType := sliceVal.Type().Elem()
+
+	tp := elType
+
+	for tp.Kind() == reflect.Ptr {
+		tp = tp.Elem()
+	}
+
+	var keyType reflect.Type
+	var keyField string
+
+	for i := 0; i < tp.NumField(); i++ {
+		if strings.Contains(string(tp.Field(i).Tag), BadgerholdKeyTag) ||
+			tp.Field(i).Tag.Get(badgerholdPrefixTag) == badgerholdPrefixKeyValue {
+			keyType = tp.Field(i).Type
+			keyField = tp.Field(i).Name
+			break
+		}
+	}
+
+	val := reflect.New(tp)
+
+	err := runQueryPRS(tx, val.Interface(), query, nil, query.skip, kuncian,
+		func(r *record, kuncian string) error {
+			var rowValue reflect.Value
+
+			if elType.Kind() == reflect.Ptr {
+				rowValue = r.value
+			} else {
+				rowValue = r.value.Elem()
+			}
+
+			if keyType != nil {
+				err := decodeKey(r.key, rowValue.FieldByName(keyField).Addr().Interface(), kuncian+tp.Name())
 				if err != nil {
 					return err
 				}
@@ -915,6 +1199,86 @@ func updateQuery(tx *badger.Txn, dataType interface{}, query *Query, update func
 	}
 
 	return nil
+}
+
+func aggregateQueryPRS(tx *badger.Txn, dataType interface{}, query *Query, kuncian string, groupBy ...string) ([]*AggregateResult, error) {
+	if query == nil {
+		query = &Query{}
+	}
+
+	query.writable = false
+	var result []*AggregateResult
+
+	if len(groupBy) == 0 {
+		result = append(result, &AggregateResult{})
+	}
+
+	err := runQueryPRS(tx, dataType, query, nil, query.skip, kuncian,
+		func(r *record, kuncian string) error {
+			if len(groupBy) == 0 {
+				result[0].reduction = append(result[0].reduction, r.value)
+				return nil
+			}
+
+			grouping := make([]reflect.Value, len(groupBy))
+
+			for i := range groupBy {
+				fVal := r.value.Elem().FieldByName(groupBy[i])
+				if !fVal.IsValid() {
+					return fmt.Errorf("The field %s does not exist in the type %s", groupBy[i],
+						r.value.Type())
+				}
+
+				grouping[i] = fVal
+			}
+
+			var err error
+			var c int
+			var allEqual bool
+
+			i := sort.Search(len(result), func(i int) bool {
+				for j := range grouping {
+					c, err = compare(result[i].group[j].Interface(), grouping[j].Interface())
+					if err != nil {
+						return true
+					}
+					if c != 0 {
+						return c >= 0
+					}
+					// if group part is equal, compare the next group part
+				}
+				allEqual = true
+				return true
+			})
+
+			if err != nil {
+				return err
+			}
+
+			if i < len(result) {
+				if allEqual {
+					// group already exists, append results to reduction
+					result[i].reduction = append(result[i].reduction, r.value)
+					return nil
+				}
+			}
+
+			// group  not found, create another grouping at i
+			result = append(result, nil)
+			copy(result[i+1:], result[i:])
+			result[i] = &AggregateResult{
+				group:     grouping,
+				reduction: []reflect.Value{r.value},
+			}
+
+			return nil
+		})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
 }
 
 func aggregateQuery(tx *badger.Txn, dataType interface{}, query *Query, groupBy ...string) ([]*AggregateResult, error) {

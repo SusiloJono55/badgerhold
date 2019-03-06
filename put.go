@@ -112,6 +112,63 @@ func (s *Store) TxInsert(tx *badger.Txn, key, data interface{}) error {
 	return nil
 }
 
+// TxInsertPRS is the same as Insert except it allows you specify your own transaction
+func (s *Store) TxInsertPRS(tx *badger.Txn, key, data interface{}, kuncian string) error {
+	storer := newStorer(data)
+	var err error
+
+	gk, err := encodeKey(key, kuncian+storer.Type())
+
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.Get(gk)
+	if err != badger.ErrKeyNotFound {
+		return ErrKeyExists
+	}
+
+	value, err := encode(data)
+	if err != nil {
+		return err
+	}
+
+	// insert data
+	err = tx.Set(gk, value)
+
+	if err != nil {
+		return err
+	}
+
+	dataVal := reflect.Indirect(reflect.ValueOf(data))
+	if !dataVal.CanSet() {
+		return nil
+	}
+	dataType := dataVal.Type()
+
+	for i := 0; i < dataType.NumField(); i++ {
+		tf := dataType.Field(i)
+		if _, ok := tf.Tag.Lookup(BadgerholdKeyTag); ok ||
+			tf.Tag.Get(badgerholdPrefixTag) == badgerholdPrefixKeyValue {
+			fieldValue := dataVal.Field(i)
+			keyValue := reflect.ValueOf(key)
+			if keyValue.Type() != tf.Type {
+				break
+			}
+			if !fieldValue.CanSet() {
+				break
+			}
+			if !reflect.DeepEqual(fieldValue.Interface(), reflect.Zero(tf.Type).Interface()) {
+				break
+			}
+			fieldValue.Set(keyValue)
+			break
+		}
+	}
+
+	return nil
+}
+
 // Update updates an existing record in the badgerhold
 // if the Key doesn't already exist in the store, then it fails with ErrNotFound
 func (s *Store) Update(key interface{}, data interface{}) error {

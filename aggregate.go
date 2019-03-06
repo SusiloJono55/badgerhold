@@ -177,11 +177,35 @@ func (s *Store) FindAggregate(dataType interface{}, query *Query, groupBy ...str
 	return result, nil
 }
 
+// FindAggregatePRS returns an aggregate grouping for the passed in query
+// groupBy is optional
+func (s *Store) FindAggregatePRS(dataType interface{}, query *Query, kuncian string, groupBy ...string) ([]*AggregateResult, error) {
+	var result []*AggregateResult
+	var err error
+	err = s.Badger().View(func(tx *badger.Txn) error {
+		result, err = s.TxFindAggregatePRS(tx, dataType, query, kuncian, groupBy...)
+		return err
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
 // TxFindAggregate is the same as FindAggregate, but you specify your own transaction
 // groupBy is optional
 func (s *Store) TxFindAggregate(tx *badger.Txn, dataType interface{}, query *Query,
 	groupBy ...string) ([]*AggregateResult, error) {
 	return aggregateQuery(tx, dataType, query, groupBy...)
+}
+
+// TxFindAggregatePRS is the same as FindAggregate, but you specify your own transaction
+// groupBy is optional
+func (s *Store) TxFindAggregatePRS(tx *badger.Txn, dataType interface{}, query *Query, kuncian string,
+	groupBy ...string) ([]*AggregateResult, error) {
+	return aggregateQueryPRS(tx, dataType, query, kuncian, groupBy...)
 }
 
 func tryFloat(val reflect.Value) float64 {

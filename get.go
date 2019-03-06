@@ -51,7 +51,22 @@ func (s *Store) Find(result interface{}, query *Query) error {
 	})
 }
 
+// FindPRS retrieves a set of values from the badgerhold that matches the passed in query
+// result must be a pointer to a slice.
+// The result of the query will be appended to the passed in result slice, rather than the passed in slice being
+// emptied.
+func (s *Store) FindPRS(result interface{}, query *Query, kuncian string) error {
+	return s.Badger().View(func(tx *badger.Txn) error {
+		return s.TxFindPRS(tx, result, query, kuncian)
+	})
+}
+
 // TxFind allows you to pass in your own badger transaction to retrieve a set of values from the badgerhold
 func (s *Store) TxFind(tx *badger.Txn, result interface{}, query *Query) error {
 	return findQuery(tx, result, query)
+}
+
+// TxFindPRS allows you to pass in your own badger transaction to retrieve a set of values from the badgerhold
+func (s *Store) TxFindPRS(tx *badger.Txn, result interface{}, query *Query, kuncian string) error {
+	return findQueryPRS(tx, result, query, kuncian)
 }
