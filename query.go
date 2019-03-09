@@ -1360,3 +1360,90 @@ func aggregateQuery(tx *badger.Txn, dataType interface{}, query *Query, groupBy 
 
 	return result, nil
 }
+
+func countSource(tx *badger.Txn, datatype interface{}, query *Query, kuncian string, count *int) error {
+	if query == nil {
+		query = &Query{}
+	}
+
+	query.writable = false
+
+	total := 0
+
+	err := runQuerySourceCount(tx, datatype, query, nil, kuncian,
+		func() error {
+			total++
+			return nil
+		})
+
+	if err != nil {
+		return err
+	}
+
+	*count = total
+
+	return nil
+}
+
+func runQuerySourceCount(tx *badger.Txn, dataType interface{}, query *Query, retrievedKeys keyList, kuncian string,
+	action func() error) error {
+	storer := newStorer(dataType)
+
+	tp := dataType
+
+	for reflect.TypeOf(tp).Kind() == reflect.Ptr {
+		tp = reflect.ValueOf(tp).Elem().Interface()
+	}
+
+	query.dataType = reflect.TypeOf(tp)
+
+	iter := newIterator(tx, kuncian+storer.Type(), query, query.bookmark)
+	if (query.writable || query.subquery) && query.bookmark == nil {
+		query.bookmark = iter.createBookmark()
+	}
+
+	defer func() {
+		iter.Close()
+		query.bookmark = nil
+	}()
+
+	newKeys := make(keyList, 0)
+
+	for k, _ := iter.Next(); k != nil; k, _ = iter.Next() {
+		if len(retrievedKeys) != 0 {
+			// don't check this record if it's already been retrieved
+			if retrievedKeys.in(k) {
+				continue
+			}
+		}
+
+		err := action()
+		if err != nil {
+			return err
+		}
+
+		// track that this key's entry has been added to the result list
+		newKeys.add(k)
+
+	}
+
+	if iter.Error() != nil {
+		return iter.Error()
+	}
+
+	if len(query.ors) > 0 {
+		iter.Close()
+		for i := range newKeys {
+			retrievedKeys.add(newKeys[i])
+		}
+
+		for i := range query.ors {
+			err := runQuerySourceCount(tx, tp, query.ors[i], retrievedKeys, kuncian, action)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}

@@ -70,3 +70,13 @@ func (s *Store) TxFind(tx *badger.Txn, result interface{}, query *Query) error {
 func (s *Store) TxFindPRS(tx *badger.Txn, result interface{}, query *Query, kuncian string) error {
 	return findQueryPRS(tx, result, query, kuncian)
 }
+
+func (s *Store) GetSourceCount(result interface{}, query *Query, kuncian string, count *int) error {
+	return s.Badger().View(func(tx *badger.Txn) error {
+		return s.TxGetSourceCount(tx, result, query, kuncian, count)
+	})
+}
+
+func (s *Store) TxGetSourceCount(tx *badger.Txn, result interface{}, query *Query, kuncian string, count *int) error {
+	return countSource(tx, result, query, kuncian, count)
+}
