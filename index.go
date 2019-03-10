@@ -350,6 +350,30 @@ func (i *iterator) Next() (key []byte, value []byte) {
 
 	return
 }
+func (i *iterator) NextCounter() (key []byte, value []byte) {
+	if i.err != nil {
+		return nil, nil
+	}
+
+	if len(i.keyCache) == 0 {
+		newKeys, err := i.nextKeys(i.iter)
+		if err != nil {
+			i.err = err
+			return nil, nil
+		}
+
+		if len(newKeys) == 0 {
+			return nil, nil
+		}
+
+		i.keyCache = append(i.keyCache, newKeys...)
+	}
+
+	key = i.keyCache[0]
+	i.keyCache = i.keyCache[1:]
+
+	return
+}
 
 // Error returns the last error, iterator.Next() will not continue if there is an error present
 func (i *iterator) Error() error {

@@ -1409,7 +1409,7 @@ func runQuerySourceCount(tx *badger.Txn, dataType interface{}, query *Query, ret
 
 	newKeys := make(keyList, 0)
 
-	for k, _ := iter.Next(); k != nil; k, _ = iter.Next() {
+	for k, _ := iter.NextCounter(); k != nil; k, _ = iter.NextCounter() {
 		if len(retrievedKeys) != 0 {
 			// don't check this record if it's already been retrieved
 			if retrievedKeys.in(k) {
