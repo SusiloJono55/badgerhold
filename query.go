@@ -1146,6 +1146,35 @@ func deleteQuery(tx *badger.Txn, dataType interface{}, query *Query) error {
 	return nil
 }
 
+func deleteQueryPRS(tx *badger.Txn, dataType interface{}, query *Query, kuncian string) error {
+	if query == nil {
+		query = &Query{}
+	}
+	query.writable = true
+
+	var records []*record
+
+	err := runQueryPRS(tx, dataType, query, nil, query.skip, kuncian,
+		func(r *record, kuncian string) error {
+			records = append(records, r)
+
+			return nil
+		})
+
+	if err != nil {
+		return err
+	}
+
+	for i := range records {
+		err := tx.Delete(records[i].key)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func updateQuery(tx *badger.Txn, dataType interface{}, query *Query, update func(record interface{}) error) error {
 	if query == nil {
 		query = &Query{}

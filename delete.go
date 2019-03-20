@@ -66,3 +66,15 @@ func (s *Store) DeleteMatching(dataType interface{}, query *Query) error {
 func (s *Store) TxDeleteMatching(tx *badger.Txn, dataType interface{}, query *Query) error {
 	return deleteQuery(tx, dataType, query)
 }
+
+// DeleteMatching deletes all of the records that match the passed in query
+func (s *Store) DeleteMatchingPRS(dataType interface{}, query *Query, kuncian string) error {
+	return s.Badger().Update(func(tx *badger.Txn) error {
+		return s.TxDeleteMatchingPRS(tx, dataType, query, kuncian)
+	})
+}
+
+// TxDeleteMatching does the same as DeleteMatching, but allows you to specify your own transaction
+func (s *Store) TxDeleteMatchingPRS(tx *badger.Txn, dataType interface{}, query *Query, kuncian string) error {
+	return deleteQueryPRS(tx, dataType, query, kuncian)
+}
