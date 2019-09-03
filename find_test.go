@@ -395,6 +395,16 @@ var testResults = []test{
 		result: []int{0, 1, 2, 3, 5, 6, 8, 9, 11, 13, 14, 16},
 	},
 	test{
+		name:   "String starts with",
+		query:  badgerhold.Where("Name").HasPrefix("golf"),
+		result: []int{11},
+	},
+	test{
+		name:   "String ends with",
+		query:  badgerhold.Where("Name").HasSuffix("cart"),
+		result: []int{11},
+	},
+	test{
 		name:   "Self-Field comparison",
 		query:  badgerhold.Where("Color").Eq(badgerhold.Field("Fruit")).And("Fruit").Ne(""),
 		result: []int{6},
@@ -655,7 +665,7 @@ func TestQueryStringPrint(t *testing.T) {
 		And("ThirdField").RegExp(regexp.MustCompile("test")).Index("IndexName").And("FirstField").
 		MatchFunc(func(ra *badgerhold.RecordAccess) (bool, error) {
 			return true, nil
-		}))
+		})).And("SeventhField").HasPrefix("SeventhValue").And("EighthField").HasSuffix("EighthValue")
 
 	contains := []string{
 		"FirstField == first value",
@@ -669,6 +679,8 @@ func TestQueryStringPrint(t *testing.T) {
 		"SecondField is nil",
 		"ThirdField matches the regular expression test",
 		"Using Index [IndexName]",
+		"SeventhField starts with SeventhValue",
+		"EighthField ends with EighthValue",
 	}
 
 	// map order isn't guaranteed, check if all needed lines exist
@@ -998,5 +1010,55 @@ func TestQueryIterKeyCacheOverflow(t *testing.T) {
 			})
 		}
 
+	})
+}
+
+func TestNestedStructPointer(t *testing.T) {
+
+	type notification struct {
+		Enabled bool
+	}
+
+	type device struct {
+		ID            string `badgerhold:"key"`
+		Notifications *notification
+	}
+
+	testWrap(t, func(store *badgerhold.Store, t *testing.T) {
+		id := "1"
+		store.Insert(id, &device{
+			ID: id,
+			Notifications: &notification{
+				Enabled: true,
+			},
+		})
+
+		devices := []*device{}
+		err := store.Find(&devices, nil)
+		if err != nil {
+			t.Fatalf("Error finding data for nested struct testing: %s", err)
+		}
+
+		device := &device{}
+		err = store.Get(id, device)
+		if err != nil {
+			t.Fatalf("Error getting data for nested struct testing: %s", err)
+		}
+
+		if devices[0].ID != id {
+			t.Fatalf("ID Expected %s, got %s", id, devices[0].ID)
+		}
+
+		if !devices[0].Notifications.Enabled {
+			t.Fatalf("Notifications.Enabled Expected  %t, got %t", true, devices[0].Notifications.Enabled)
+		}
+
+		if device.ID != id {
+			t.Fatalf("ID Expected %s, got %s", id, device.ID)
+		}
+
+		if !device.Notifications.Enabled {
+			t.Fatalf("Notifications.Enabled Expected  %t, got %t", true, device.Notifications.Enabled)
+		}
 	})
 }
